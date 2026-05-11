@@ -1,6 +1,6 @@
 GIT
   remote: https://github.com/smokinblackdog/encrypth.git
-  revision: 59aee8e31db5c158976a7db43cf5e9b4524f5cd9
+  revision: d50b51a575f70cc5976a3b4902e906b01485aaaa
   branch: main
   specs:
     encrypth (0.2.0)
@@ -11,11 +11,15 @@ GEM
     base64 (0.3.0)
     json (2.19.5)
     logger (1.7.0)
+    marcel (1.1.0)
+    multi_json (1.21.1)
     mustermann (3.1.1)
     nio4r (2.7.5)
     puma (8.0.1)
       nio4r (~> 2.0)
     rack (3.2.6)
+    rack-attack (6.8.0)
+      rack (>= 1.0, < 4)
     rack-protection (4.2.1)
       base64 (>= 0.1.0)
       logger (>= 1.6.0)
@@ -23,12 +27,22 @@ GEM
     rack-session (2.1.2)
       base64 (>= 0.1.0)
       rack (>= 3.0.0)
+    rack-timeout (0.7.0)
+    rackup (2.3.1)
+      rack (>= 3)
+    rubyzip (3.3.0)
     sinatra (4.2.1)
       logger (>= 1.6.0)
       mustermann (~> 3.0)
       rack (>= 3.0.0, < 4)
       rack-protection (= 4.2.1)
       rack-session (>= 2.0.0, < 3)
+      tilt (~> 2.0)
+    sinatra-contrib (4.2.1)
+      multi_json (>= 0.0.2)
+      mustermann (~> 3.0)
+      rack-protection (= 4.2.1)
+      sinatra (= 4.2.1)
       tilt (~> 2.0)
     tilt (2.7.0)
 
@@ -38,8 +52,15 @@ PLATFORMS
 DEPENDENCIES
   encrypth!
   json
-  puma
+  marcel
+  puma (~> 8.0)
+  rack-attack
+  rack-protection
+  rack-timeout
+  rackup (~> 2.3)
+  rubyzip
   sinatra
+  sinatra-contrib
 
 BUNDLED WITH
    2.6.9
