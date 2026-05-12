@@ -239,5 +239,5 @@ end
 
 # ============================ ЗАПУСК
 if __FILE__ == $0
-  puts "Encrypth Secure Upload Service running on http://localhost:9292"
+  puts "Encrypth Secure Upload Service running on http://localhost:4567"
 end
