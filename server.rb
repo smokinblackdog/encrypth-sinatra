@@ -10,6 +10,7 @@ require 'zip'
 require 'marcel'
 require 'rack/attack'
 require 'rack/timeout/base'
+require 'rack/cors'
 
 # моя прелесть
 require 'encrypth'
@@ -18,6 +19,17 @@ require 'encrypth'
 set :max_payload_size, 100_000_000 # 100 MB
 set :show_exceptions, false
 set :raise_errors, false
+
+use Rack::Cors do
+  allow do
+    origins 'http://localhost:5173', 'http://localhost:5174'
+    resource '*',
+      methods: [:get, :post, :put, :delete, :options, :head],
+      headers: :any,
+      credentials: false,
+      max_age: 600
+  end
+end
 
 # ============================ RACK MIDDLEWARE
 use Rack::Attack
