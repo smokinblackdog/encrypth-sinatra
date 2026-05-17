@@ -6,6 +6,10 @@
   color: var(--text-muted);
 }
 
+.tabs {
+  color: var(--accent);
+}
+
 .upload-stage {
   min-height: 100svh;
   display: grid;
