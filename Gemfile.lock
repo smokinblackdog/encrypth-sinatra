@@ -1,6 +1,6 @@
 GIT
   remote: https://github.com/smokinblackdog/encrypth.git
-  revision: d50b51a575f70cc5976a3b4902e906b01485aaaa
+  revision: c77f71994666a1680afa7b3ceb798c319784e086
   branch: main
   specs:
     encrypth (0.2.0)
