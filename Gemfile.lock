@@ -1,15 +1,9 @@
-GIT
-  remote: https://github.com/smokinblackdog/encrypth.git
-  revision: c77f71994666a1680afa7b3ceb798c319784e086
-  branch: main
-  specs:
-    encrypth (0.2.0)
-
 GEM
   remote: https://rubygems.org/
   specs:
     base64 (0.3.0)
     diff-lcs (1.6.2)
+    encrypth (0.2.0)
     json (2.19.5)
     logger (1.7.0)
     marcel (1.1.0)
@@ -69,7 +63,7 @@ PLATFORMS
   x64-mingw-ucrt
 
 DEPENDENCIES
-  encrypth!
+  encrypth
   json
   marcel
   puma (~> 8.0)
