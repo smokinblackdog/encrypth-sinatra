@@ -14,3 +14,7 @@ gem "encrypth",
     branch: "main"
 gem "rackup", "~> 2.3"
 gem "puma", "~> 8.0"
+group :test do
+  gem 'rspec'
+  gem 'rack-test'
+end
