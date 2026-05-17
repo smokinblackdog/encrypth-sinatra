@@ -1,5 +1,5 @@
 require 'bundler/setup'
-require './app'
+require './server'
 
 # Лимит размера запроса
 use Rack::ContentLength

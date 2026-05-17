@@ -14,29 +14,123 @@ require 'rack/cors'
 
 # моя прелесть
 require 'encrypth'
+require 'encrypth/web_archiver'
 
-# ============================ НАСТРОЙКИ 
-set :max_payload_size, 100_000_000 # 100 MB
-set :show_exceptions, false
-set :raise_errors, false
+class FileCleanup
+  def initialize(file_path, temp_dir = nil)
+    @file_path = file_path
+    @temp_dir = temp_dir
+    @closed = false
+  end
 
-use Rack::Cors do
-  allow do
-    origins 'http://localhost:5173', 'http://localhost:5174'
-    resource '*',
-      methods: [:get, :post, :put, :delete, :options, :head],
-      headers: :any,
-      credentials: false,
-      max_age: 600
+  def each
+    File.open(@file_path, 'rb') do |file|
+      while chunk = file.read(16384)
+        yield chunk
+      end
+    end
+  end
+
+  def close
+    return if @closed
+    @closed = true
+    
+    begin
+      File.delete(@file_path) if @file_path && File.exist?(@file_path)
+    rescue => e
+      # Игнорируем ошибки удаления
+    end
+    
+    begin
+      FileUtils.rm_rf(@temp_dir) if @temp_dir && Dir.exist?(@temp_dir)
+    rescue => e
+      # Игнорируем ошибки удаления
+    end
   end
 end
 
+# Rate Limiter для Rack::Attack
+class InMemoryRateLimitStore
+  def initialize
+    @data = {}
+    @lock = Mutex.new
+  end
+
+  def increment(key, amount = 1, expires_in: nil)
+    now = Time.now.to_f
+    @lock.synchronize do
+      purge_expired!(now)
+      entry = @data[key] ||= { value: 0, expires_at: expires_in ? now + expires_in : nil }
+      entry[:value] += amount
+    end
+  end
+
+  def read(key)
+    now = Time.now.to_f
+    @lock.synchronize do
+      purge_expired!(now)
+      @data[key]&.fetch(:value, nil)
+    end
+  end
+
+  def write(key, value, expires_in: nil)
+    now = Time.now.to_f
+    @lock.synchronize do
+      purge_expired!(now)
+      @data[key] = { value: value, expires_at: expires_in ? now + expires_in : nil }
+      true
+    end
+  end
+
+  private
+
+  def purge_expired!(now)
+    @data.delete_if { |_, entry| entry[:expires_at] && entry[:expires_at] <= now }
+  end
+end
+
+# ============================ НАСТРОЙКИ 
+configure do
+  set :max_payload_size, 100_000_000 # 100 MB
+  set :show_exceptions, false
+  set :raise_errors, false
+  set :logging, true
+end
+
 # ============================ RACK MIDDLEWARE
+use Rack::Cors do |cors|
+  cors.allow do |allow|
+    configured_origins = ENV.fetch('CORS_ALLOWED_ORIGINS', '')
+      .split(',')
+      .map(&:strip)
+      .reject(&:empty?)
+
+    allow.origins(
+      *configured_origins,
+      %r{\Ahttps?://localhost(?::\d+)?\z},
+      %r{\Ahttps?://127\.0\.0\.1(?::\d+)?\z}
+    )
+    allow.resource '/upload',
+      methods: [:post, :options],
+      headers: :any,
+      credentials: false
+    allow.resource '/decrypt',
+      methods: [:post, :options],
+      headers: :any,
+      credentials: false
+    allow.resource '/health',
+      methods: [:get],
+      headers: :any,
+      credentials: false
+  end
+end
+
 use Rack::Attack
 use Rack::Timeout, service_timeout: 120
-use Rack::Protection
+use Rack::Protection, except: :http_origin
 use Rack::TempfileReaper
 
+Rack::Attack.cache.store = InMemoryRateLimitStore.new
 Rack::Attack.throttle('uploads/ip', limit: 20, period: 60) do |req|
   req.ip if req.path == '/upload' && req.post?
 end
@@ -49,72 +143,66 @@ ALLOWED_EXTENSIONS = %w[
   mp3 mp4 wav ogg flac
   zip 
   tar.gz
-]
+].freeze
 
-MAX_FILES_PER_REQUEST = 20
-MAX_TOTAL_UNPACKED_SIZE = 100_000_000
+MAX_FILES = 20
+MAX_UNPACKED_SIZE = 100_000_000
 
 # ============================ ХЕЛПЕРЫ
 helpers do
   def safe_filename?(filename)
-    ext = File.extname(filename).downcase[1..-1]
-    return false if ext.nil? || ext.empty?
-    return false if filename.count('.') > 1 && !filename.end_with?('.tar.gz')
+    return false if filename.nil? || filename.include?('/') || filename.include?('\\')
+    
+    # Поддержка .tar.gz
+    if filename.end_with?('.tar.gz')
+      return true
+    end
+    
+    ext = filename.split('.').last&.downcase
     ALLOWED_EXTENSIONS.include?(ext)
   end
-  
-  def detect_real_mime_type(file_path)
-    Marcel::MimeType.for Pathname.new(file_path)
-  rescue
-    'application/octet-stream'
+
+  def validate_file_content!(file_path, filename)
+    unless safe_filename?(filename)
+      halt 400, json(error: "Forbidden file extension: #{File.extname(filename)}")
+    end
+
+    mime = Marcel::MimeType.for(Pathname.new(file_path))
+    forbidden_mimes = %w[image/svg+xml text/html application/javascript application/x-msdownload]
+    if forbidden_mimes.include?(mime)
+      halt 400, json(error: "Forbidden content type in file: #{filename}")
+    end
+
+    if filename.end_with?('.zip')
+      validate_zip!(file_path)
+    end
   end
-  
-  def forbidden_by_magic?(file_path)
-    mime = detect_real_mime_type(file_path)
-    %w[image/svg+xml text/html application/javascript application/x-msdownload].include?(mime)
-  end
-  
-  def safe_zip?(zip_path)
-    total_unpacked = 0
+
+  def validate_zip!(zip_path)
+    total_size = 0
     Zip::File.open(zip_path) do |zip|
       zip.each do |entry|
-        total_unpacked += entry.size
-        return false if total_unpacked > MAX_TOTAL_UNPACKED_SIZE
-        return false if entry.symlink?
-        return false if entry.name.include?('..') || entry.name.start_with?('/')
+        total_size += entry.size
+        halt 400, json(error: "Zip bomb detected") if total_size > MAX_UNPACKED_SIZE
+        halt 400, json(error: "Zip Slip detected") if entry.name.include?('..')
         
-        ext = File.extname(entry.name).downcase[1..-1]
-        return false if !ALLOWED_EXTENSIONS.include?(ext)
+        ext = entry.name.split('.').last&.downcase
+        unless ALLOWED_EXTENSIONS.include?(ext)
+          halt 400, json(error: "Forbidden file inside zip: #{entry.name}")
+        end
       end
     end
-    true
-  rescue
-    false
+  rescue Zip::Error
+    halt 400, json(error: "Invalid zip archive")
   end
-  
-  def validate_file!(file, index)
-    filename = file[:filename]
-    tempfile = file[:tempfile]
-    
-    unless safe_filename?(filename)
-      halt 400, json(error: "File #{index + 1}: '#{filename}' has unsupported extension")
-    end
-    
-    if forbidden_by_magic?(tempfile.path)
-      halt 400, json(error: "File #{index + 1}: '#{filename}' has forbidden content type (SVG/HTML/EXE)")
-    end
-    
-    if filename.end_with?('.zip')
-      unless safe_zip?(tempfile.path)
-        halt 400, json(error: "File #{index + 1}: '#{filename}' is malformed or contains forbidden content")
-      end
-    end
-    
-    true
+
+  def safe_temp_path(prefix, ext)
+    File.join(Dir.tmpdir, "#{prefix}_#{SecureRandom.hex(8)}#{ext}")
   end
 end
 
-# ============================ ОСНОВНОЙ ЭНДПОИНТ (ШИФРОВАНИЕ)
+# ============================ ЭНДПОИНТЫ
+
 post '/upload' do
   content_type :json
   
@@ -122,119 +210,136 @@ post '/upload' do
   halt 400, json(error: 'No files provided') unless files
   
   files = [files] unless files.is_a?(Array)
-  
-  if files.size > MAX_FILES_PER_REQUEST
-    halt 400, json(error: "Too many files, max #{MAX_FILES_PER_REQUEST}")
-  end
+  halt 400, json(error: "Too many files, max #{MAX_FILES}") if files.size > MAX_FILES
   
   password = params[:password]
-  if password.nil? || password.length < 8
-    halt 400, json(error: 'Password required (minimum 8 characters)')
-  end
-  
-  # валидация всех файлов
-  files.each_with_index do |file, idx|
-    validate_file!(file, idx)
-  end
-  
-  # сохраняем файлы во временную папку
-  temp_dir = Dir.mktmpdir
-  file_paths = []
+  halt 400, json(error: 'Password required (minimum 8 characters)') if password.nil? || password.length < 8
+
+  temp_dir = Dir.mktmpdir("encrypth_up_")
+  encrypted_path = nil
   
   begin
+    file_paths = []
+    
     files.each do |file|
-      dest = File.join(temp_dir, file[:filename].gsub(/[^a-zA-Z0-9._-]/, '_'))
+      validate_file_content!(file[:tempfile].path, file[:filename])
+      
+      safe_name = file[:filename].gsub(/[^a-zA-Z0-9._-]/, '_')
+      dest = File.join(temp_dir, safe_name)
       FileUtils.cp(file[:tempfile].path, dest)
       file_paths << dest
     end
-  
+
     archiver = Encrypth::WebArchiver.new(password)
     result = archiver.encrypt(file_paths)
+    encrypted_path = result[:path]
     
-    # отдаём файл
-    content_type 'application/octet-stream'
+    filename = "secure_#{Time.now.to_i}.tar.enc"
+    
     headers(
-      'Content-Disposition' => "attachment; filename=\"secure_#{Time.now.to_i}.tar.enc\"",
-      'Content-Length' => result[:size].to_s,
+      'Content-Type' => 'application/octet-stream',
+      'Content-Disposition' => "attachment; filename=\"#{filename}\"",
       'Cache-Control' => 'no-cache, no-store'
     )
+
+    FileCleanup.new(encrypted_path, temp_dir)
     
-    send_file result[:path], disposition: 'attachment'
+  rescue => e
+    logger.error "Upload error: #{e.class} - #{e.message}"
+    logger.error e.backtrace.first(5).join("\n")
     
-  ensure
     FileUtils.rm_rf(temp_dir) if temp_dir && Dir.exist?(temp_dir)
+    File.delete(encrypted_path) if encrypted_path && File.exist?(encrypted_path)
+    
+    halt 500, json(error: "Encryption failed")
   end
 end
 
-# ============================ РАСШИФРОВКА
 post '/decrypt' do
   content_type :json
   
-  encrypted_file = params[:file]
-  halt 400, json(error: 'No file provided') unless encrypted_file
+  file = params[:file]
+  halt 400, json(error: 'No file provided') unless file
   
   password = params[:password]
-  if password.nil? || password.length < 8
-    halt 400, json(error: 'Password required (minimum 8 characters)')
-  end
+  halt 400, json(error: 'Password required (minimum 8 characters)') if password.nil? || password.length < 8
   
-  # проверяем расширение файла
-  unless encrypted_file[:filename].end_with?('.tar.enc')
+  unless file[:filename].end_with?('.tar.enc')
     halt 400, json(error: 'Invalid file format. Expected .tar.enc')
   end
-  
-  temp_decrypt_dir = nil
-  tar_temp = nil
+
+  temp_extract_dir = Dir.mktmpdir("encrypth_dec_")
+  output_zip_path = safe_temp_path("decrypted", ".zip")
   
   begin
-    # создаём временную директорию для расшифрованных файлов
-    temp_decrypt_dir = Dir.mktmpdir
-    
     archiver = Encrypth::WebArchiver.new(password)
-    tar_temp = Tempfile.new(['decrypted', '.tar'])
-    tar_temp.binmode
-    tar_temp.close
-    
-    archiver.decrypt(encrypted_file[:tempfile].path, temp_decrypt_dir)
-    
-    extracted_files = Dir.glob(File.join(temp_decrypt_dir, '**', '*')).reject { |f| File.directory?(f) }
+    archiver.decrypt(file[:tempfile].path, temp_extract_dir)
+
+    extracted_files = Dir.glob(File.join(temp_extract_dir, '**', '*')).reject { |f| File.directory?(f) }
     
     if extracted_files.empty?
-      halt 400, json(error: 'No files found in archive or decryption failed')
+      FileUtils.rm_rf(temp_extract_dir)
+      halt 400, json(error: 'Archive is empty or wrong password')
     end
-    
-    zip_temp = Tempfile.new(['decrypted_files', '.zip'])
-    zip_temp.binmode
-    
-    Zip::File.open(zip_temp.path, Zip::File::CREATE) do |zip|
-      extracted_files.each do |file|
-        relative_path = file.sub("#{temp_decrypt_dir}/", '')
-        zip.add(relative_path, file)
+
+    extracted_files.each do |f_path|
+      filename = File.basename(f_path)
+      ext = filename.split('.').last&.downcase
+      unless ALLOWED_EXTENSIONS.include?(ext)
+        FileUtils.rm_rf(temp_extract_dir)
+        halt 400, json(error: "Forbidden file type inside archive: #{ext}")
       end
     end
-    
-    content_type 'application/zip'
+
+    Zip::File.open(output_zip_path, create: true) do |zip|
+      extracted_files.each do |f_path|
+        relative_path = f_path.sub("#{temp_extract_dir}/", '')
+        zip.add(relative_path, f_path)
+      end
+    end
+
     headers(
+      'Content-Type' => 'application/zip',
       'Content-Disposition' => "attachment; filename=\"decrypted_#{Time.now.to_i}.zip\"",
-      'Content-Length' => File.size(zip_temp.path).to_s,
       'Cache-Control' => 'no-cache, no-store'
     )
-    
-    send_file zip_temp.path, disposition: 'attachment'
+
+    FileCleanup.new(output_zip_path, temp_extract_dir)
+
+  rescue OpenSSL::Cipher::CipherError => e
+    logger.error "Auth/Password error: #{e.message}"
+    FileUtils.rm_rf(temp_extract_dir) if Dir.exist?(temp_extract_dir)
+    File.delete(output_zip_path) if File.exist?(output_zip_path)
+    halt 401, json(error: "Invalid password or corrupted file")
+
   rescue => e
-    puts "Decryption error: #{e.message}"
-    puts e.backtrace
-    halt 500, json(error: "Decryption failed: #{e.message}")
-  ensure
-    FileUtils.rm_rf(temp_decrypt_dir) if temp_decrypt_dir && Dir.exist?(temp_decrypt_dir)
-    tar_temp.unlink if tar_temp && File.exist?(tar_temp.path)
+    logger.error "DECRYPTION FAIL"
+    logger.error "Class: #{e.class}"
+    logger.error "Message: #{e.message.inspect}"
+    logger.error e.backtrace.first(10).join("\n")
+    
+    FileUtils.rm_rf(temp_extract_dir) if Dir.exist?(temp_extract_dir)
+    File.delete(output_zip_path) if File.exist?(output_zip_path)
+    
+    halt 500, json(error: "Decryption failed: #{e.message.empty? ? 'Unknown error' : e.message}")
   end
 end
 
-# ============================ ЗДОРОВЬЕ
 get '/health' do
   content_type :json
-  { status: 'ok' }.to_json
+  json status: 'ok', time: Time.now.to_i
+end
+
+# ============================ ОБРАБОТКА ОШИБОК
+error 404 do
+  content_type :json
+  json error: 'Not found'
+end
+
+error do
+  content_type :json
+  logger.error "Global error: #{env['sinatra.error']&.message}"
+  json error: 'Internal server error'
 end
 
 # ============================ ЗАПУСК
