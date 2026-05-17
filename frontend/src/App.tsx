@@ -423,6 +423,22 @@ function App() {
               <Stack gap="lg">
                 <Dropzone
                   onDrop={(files) => setDecryptFile(files[0])}
+                  onReject={(rejections) => {
+                    const message = rejections[0]?.errors[0]?.message || 'Файл отклонен';
+                    setDecryptError(message);
+                    setDecryptFile(null);
+                  }}    
+                  validator={
+                    (file: File) => 
+                      {
+                        if (!file.name.endsWith('.tar.enc')) 
+                          return {
+                            code: 'invalid-extension',
+                            message: 'Разрешены только файлы .tar.enc',
+                          }; 
+                          return null
+                        }
+                      }
                   accept={{ 'application/octet-stream': ['.tar.enc'] }}
                   maxFiles={1}
                   disabled={decryptLoading}
@@ -457,6 +473,7 @@ function App() {
                       placeholder="Введите пароль от архива (минимум 8 символов)"
                       value={decryptPassword}
                       onChange={(event) => setDecryptPassword(event.currentTarget.value)}
+                      className='text'
                       style={{ flex: 1 }}
                       disabled={decryptLoading}
                       error={decryptPassword && decryptPassword.length < 8 ? 'Минимум 8 символов' : false}
