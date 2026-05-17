@@ -149,7 +149,6 @@ ALLOWED_EXTENSIONS = %w[
   txt csv json xml md log
   mp3 mp4 wav ogg flac
   zip 
-  gz tar.gz
 ].freeze
 
 MAX_FILES = 20
