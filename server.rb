@@ -82,6 +82,13 @@ class InMemoryRateLimitStore
     end
   end
 
+  def delete_matched(pattern)
+    @lock.synchronize do
+      @data.delete_if { |key, _| key.to_s.match?(pattern) }
+      true
+    end
+  end
+
   private
 
   def purge_expired!(now)
@@ -142,7 +149,7 @@ ALLOWED_EXTENSIONS = %w[
   txt csv json xml md log
   mp3 mp4 wav ogg flac
   zip 
-  tar.gz
+  gz tar.gz
 ].freeze
 
 MAX_FILES = 20
