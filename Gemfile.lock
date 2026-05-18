@@ -60,10 +60,10 @@ GEM
     tilt (2.7.0)
 
 PLATFORMS
-  x64-mingw-ucrt
+  x86_64-linux-gnu
 
 DEPENDENCIES
-  encrypth
+  encrypth (~> 0.2.0)
   json
   marcel
   puma (~> 8.0)
@@ -79,4 +79,4 @@ DEPENDENCIES
   sinatra-contrib
 
 BUNDLED WITH
-   2.6.9
+   2.4.20
